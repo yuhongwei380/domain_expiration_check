@@ -5,9 +5,14 @@ import concurrent.futures
 import pandas as pd
 import socket
 import re
-import requests # 新增：用于发送 Webhook
+import requests
 import json
-import smtplib # 新增：用于邮件
+import time
+import hmac
+import hashlib
+import base64
+import urllib.parse
+import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
 from datetime import datetime, date, timezone, timedelta
@@ -84,96 +89,126 @@ def delete_domains_db(domain_list):
             c.execute("DELETE FROM domains WHERE domain=?", (d,))
         conn.commit()
 
-# --- 核心逻辑 (保持不变) ---
+# --- 核心逻辑 ---
 
 def calculate_days_left(exp_date):
+    """计算剩余天数 (UTC+8)"""
     if not exp_date: return None
     now = datetime.now(TZ_CN)
+    
     if isinstance(exp_date, date) and not isinstance(exp_date, datetime):
         exp_date = datetime(exp_date.year, exp_date.month, exp_date.day)
+    
     if exp_date.tzinfo is None:
         exp_date = exp_date.replace(tzinfo=TZ_CN)
     else:
         exp_date = exp_date.astimezone(TZ_CN)
+        
     delta = exp_date - now
     return delta.days
 
 def query_cn_socket(domain):
-    # ... (保持原有的 Socket 代码不变) ...
-    # 为了节省篇幅，这里略去，请保留你原始代码中的 query_cn_socket 函数内容
+    """
+    Socket 深度查询 .cn
+    """
     print(f"尝试使用 Socket 深度查询: {domain}")
     whois_server = "whois.cnnic.cn"
     port = 43
     response = b""
+    
     try:
         with socket.create_connection((whois_server, port), timeout=10) as s:
             s.sendall(f"{domain}\r\n".encode())
             while True:
                 data = s.recv(4096)
-                if not data: break
+                if not data:
+                    break
                 response += data
+        
         text = response.decode('utf-8', errors='ignore')
+        
         exp_match = re.search(r'Expiration Time:\s*(\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
         reg_match = re.search(r'Sponsoring Registrar:\s*(.+)', text, re.IGNORECASE)
+        
         result = {}
         if exp_match:
             date_str = exp_match.group(1)
             result['expiry_date'] = datetime.strptime(date_str, '%Y-%m-%d')
+        
         if reg_match:
             result['registrar'] = reg_match.group(1).strip()
+            
         return result
+
     except Exception as e:
         print(f"Socket 查询失败 {domain}: {e}")
         return None
 
 def query_whois_online(domain):
-    # ... (保持原有的查询逻辑不变) ...
     domain = domain.strip().lower()
     info = {
-        'domain': domain, 'registrar': '-', 'expiry_date': '-',
-        'days_left': 99999, 'status': 'Pending'
+        'domain': domain,
+        'registrar': '-',
+        'expiry_date': '-',
+        'days_left': 99999,
+        'status': 'Pending'
     }
+
     found_date = None
     found_registrar = None
+
+    # 1. 尝试标准库查询
     try:
         w = whois.whois(domain)
         exp_date = w.expiration_date
         if isinstance(exp_date, list): exp_date = exp_date[0]
+        
         registrar = w.registrar
         if isinstance(registrar, list): registrar = registrar[0]
+        
         if exp_date:
             found_date = exp_date
             found_registrar = registrar
+
     except Exception as e:
         print(f"标准库查询失败 {domain}: {e}")
 
+    # 2. 备用 Socket 查询
     if not found_date and domain.endswith('.cn'):
         fallback_data = query_cn_socket(domain)
         if fallback_data:
-            if 'expiry_date' in fallback_data: found_date = fallback_data['expiry_date']
-            if 'registrar' in fallback_data: found_registrar = fallback_data['registrar']
+            if 'expiry_date' in fallback_data:
+                found_date = fallback_data['expiry_date']
+            if 'registrar' in fallback_data:
+                found_registrar = fallback_data['registrar']
 
+    # 3. 整合结果
     if found_date:
         info['expiry_date'] = found_date.strftime('%Y-%m-%d')
         info['registrar'] = str(found_registrar) if found_registrar else 'Unknown'
+        
         days = calculate_days_left(found_date)
         info['days_left'] = days
         
-        # 注意：这里读取动态配置的阈值来判断状态
+        # 获取动态阈值
         try:
             alert_days = int(get_setting('alert_days', 30))
         except:
             alert_days = 30
-            
+        
         if days is not None:
-            if days < 0: info['status'] = 'Expired'
-            elif days < alert_days: info['status'] = 'Warning' # 使用配置的阈值
-            else: info['status'] = 'Active'
+            if days < 0:
+                info['status'] = 'Expired'
+            elif days < alert_days:
+                info['status'] = 'Warning'
+            else:
+                info['status'] = 'Active'
         else:
             info['status'] = 'Calc Error'
     else:
         info['status'] = 'Query Failed'
         if found_registrar: info['registrar'] = str(found_registrar)
+
     return info
 
 def refresh_domains_task(domain_list):
@@ -189,11 +224,11 @@ def refresh_domains_task(domain_list):
                 pass
     return results
 
-# --- 🔥 新增: 告警发送逻辑 ---
+# --- 🔥 新增: 告警发送逻辑 (含加签) ---
 
 def send_alert_messages(expiring_domains):
     """
-    expiring_domains: list of dict, e.g. [{'domain': 'a.com', 'days': 5}, ...]
+    发送告警（支持钉钉/飞书加签）
     """
     if not expiring_domains:
         return
@@ -209,23 +244,38 @@ def send_alert_messages(expiring_domains):
 
     # 2. 读取配置
     ding_token = get_setting('ding_webhook')
+    ding_secret = get_setting('ding_secret')
     feishu_token = get_setting('feishu_webhook')
+    feishu_secret = get_setting('feishu_secret')
     smtp_host = get_setting('smtp_host')
     
-    # 3. 发送钉钉
+    # 3. 发送钉钉 (支持加签)
     if ding_token:
         try:
+            target_url = ding_token
+            # 如果配置了 Secret，进行加签计算
+            if ding_secret:
+                timestamp = str(round(time.time() * 1000))
+                secret_enc = ding_secret.encode('utf-8')
+                string_to_sign = '{}\n{}'.format(timestamp, ding_secret)
+                string_to_sign_enc = string_to_sign.encode('utf-8')
+                hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+                sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+                
+                separator = '&' if '?' in ding_token else '?'
+                target_url = f"{ding_token}{separator}timestamp={timestamp}&sign={sign}"
+
             headers = {'Content-Type': 'application/json'}
             data = {
                 "msgtype": "text",
                 "text": {"content": full_text}
             }
-            requests.post(ding_token, headers=headers, data=json.dumps(data), timeout=5)
+            requests.post(target_url, headers=headers, data=json.dumps(data), timeout=5)
             print("钉钉发送成功")
         except Exception as e:
             print(f"钉钉发送失败: {e}")
 
-    # 4. 发送飞书
+    # 4. 发送飞书 (支持加签)
     if feishu_token:
         try:
             headers = {'Content-Type': 'application/json'}
@@ -233,6 +283,17 @@ def send_alert_messages(expiring_domains):
                 "msg_type": "text",
                 "content": {"text": full_text}
             }
+            
+            # 如果配置了 Secret，进行加签计算
+            if feishu_secret:
+                timestamp = str(int(time.time()))
+                string_to_sign = '{}\n{}'.format(timestamp, feishu_secret)
+                hmac_code = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+                sign = base64.b64encode(hmac_code).decode('utf-8')
+                
+                data['timestamp'] = timestamp
+                data['sign'] = sign
+
             requests.post(feishu_token, headers=headers, data=json.dumps(data), timeout=5)
             print("飞书发送成功")
         except Exception as e:
@@ -256,8 +317,7 @@ def send_alert_messages(expiring_domains):
                     server = smtplib.SMTP_SSL(smtp_host, smtp_port)
                 else:
                     server = smtplib.SMTP(smtp_host, smtp_port)
-                    # server.starttls() # 如果是587通常需要starttls，视情况开启
-
+                
                 server.login(smtp_user, smtp_pass)
                 server.sendmail(smtp_user, smtp_to, message.as_string())
                 server.quit()
@@ -270,7 +330,7 @@ def send_alert_messages(expiring_domains):
 @app.route('/')
 def index():
     domains = get_all_domains()
-    # 动态获取阈值传给前端做颜色判断
+    # 动态获取阈值传给前端
     try:
         alert_days = int(get_setting('alert_days', 30))
     except:
@@ -280,10 +340,15 @@ def index():
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
     if request.method == 'POST':
-        # 保存配置
+        # 保存基础配置
         save_setting('alert_days', request.form.get('alert_days', '30'))
+        
+        # 保存 Webhook 及 Secret
         save_setting('ding_webhook', request.form.get('ding_webhook', '').strip())
+        save_setting('ding_secret', request.form.get('ding_secret', '').strip())
+        
         save_setting('feishu_webhook', request.form.get('feishu_webhook', '').strip())
+        save_setting('feishu_secret', request.form.get('feishu_secret', '').strip())
         
         # SMTP
         save_setting('smtp_host', request.form.get('smtp_host', '').strip())
@@ -295,11 +360,13 @@ def settings():
         flash('配置已保存')
         return redirect(url_for('settings'))
     
-    # 读取配置用于展示
+    # 读取配置
     config = {
         'alert_days': get_setting('alert_days', '30'),
         'ding_webhook': get_setting('ding_webhook', ''),
+        'ding_secret': get_setting('ding_secret', ''),
         'feishu_webhook': get_setting('feishu_webhook', ''),
+        'feishu_secret': get_setting('feishu_secret', ''),
         'smtp_host': get_setting('smtp_host', ''),
         'smtp_port': get_setting('smtp_port', '465'),
         'smtp_user': get_setting('smtp_user', ''),
@@ -336,7 +403,7 @@ def refresh_all():
                 'date': d['expiry_date']
             })
     
-    # 3. 如果有过期域名，发送通知
+    # 3. 触发通知
     if expiring_list:
         send_alert_messages(expiring_list)
         flash(f'更新完成，发现 {len(expiring_list)} 个域名即将过期，已触发告警。')
@@ -347,7 +414,6 @@ def refresh_all():
 
 @app.route('/add_single', methods=['POST'])
 def add_single():
-    # ... (保持不变) ...
     domain = request.form.get('domain')
     if domain:
         domain = domain.strip().lower()
@@ -362,7 +428,6 @@ def add_single():
 
 @app.route('/batch_delete', methods=['POST'])
 def batch_delete():
-    # ... (保持不变) ...
     selected = request.form.getlist('selected_domains')
     if selected:
         delete_domains_db(selected)
@@ -373,7 +438,6 @@ def batch_delete():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    # ... (保持不变) ...
     if 'file' not in request.files: return redirect(request.url)
     file = request.files['file']
     if not file or file.filename == '': return redirect(request.url)
@@ -409,5 +473,5 @@ def favicon(): return '', 204
 
 if __name__ == '__main__':
     init_db()
-    print("服务运行中: http://0.0.0.0:5000")
+    print("服务运行中: http://0.0.0.0:5000 (支持 .cn 深度解析)")
     app.run(host='0.0.0.0', port=5000, debug=True)
