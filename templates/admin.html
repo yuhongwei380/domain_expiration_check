@@ -1,4 +1,3 @@
-<!-- templates/admin.html (原 index.html) -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -15,10 +14,20 @@
         .status-timeout { color: #999; font-style: italic; }
         
         .action-bar { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
-        .btn-refresh { position: relative; top: -2px; }
         
-        /* 顶部导航条样式增强，区分管理员 */
+        /* 顶部导航条样式 */
         .admin-header { border-bottom: 3px solid #0d6efd; padding-bottom: 20px; margin-bottom: 20px; }
+        
+        /* --- 修复对齐问题的核心样式 --- */
+        /* 让按钮内部的图标和文字水平垂直居中，且高度一致 */
+        .btn-action { 
+            display: inline-flex !important; 
+            align-items: center; 
+            justify-content: center;
+            gap: 6px; /* 图标和文字的间距 */
+            height: 38px; /* 强制固定高度，防止因字体不同导致的高度差异 */
+            vertical-align: middle;
+        }
     </style>
     <script>
         function toggle(source) {
@@ -40,14 +49,14 @@
             <p class="text-muted mb-0">拥有完整权限：添加、删除、更新、配置</p>
         </div>
         <div class="d-flex gap-2">
-            <!-- 按钮组 -->
-            <a href="/settings" class="btn btn-outline-primary shadow-sm">
+            <!-- 按钮组：统一添加 btn-action 类 -->
+            <a href="/settings" class="btn btn-outline-primary shadow-sm btn-action">
                 ⚙️ 管理配置
             </a>
-            <a href="/refresh_all" class="btn btn-success btn-refresh shadow-sm">
+            <a href="/refresh_all" class="btn btn-success shadow-sm btn-action">
                 🔄 更新状态
             </a>
-            <a href="/logout" class="btn btn-danger shadow-sm">
+            <a href="/logout" class="btn btn-danger shadow-sm btn-action">
                 🚪 退出登录
             </a>
         </div>
