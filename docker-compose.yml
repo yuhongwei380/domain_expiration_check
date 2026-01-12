@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  domain-monitor:
+    build: .
+    container_name: domain_monitor
+    restart: always
+    environment:
+      # --- 自定义配置区域 ---
+      - ADMIN_PASSWORD=YourStrongPassword123  # 在这里修改管理员密码
+      - SECRET_KEY=random_secret_string_here  # Flask Session加密密钥
+      - DATA_DIR=/app/data                    # 对应 Dockerfile 中的路径
+      - TZ=Asia/Shanghai                      # 设置容器时区为中国时间
+    ports:
+      # 格式: "宿主机端口:容器端口"
+      # 如果你想改成 8080 端口访问，就写 "8080:5000"
+      - "5000:5000"
+    volumes:
+      # 数据持久化：将宿主机的 ./data 目录挂载到容器内
+      # 这样删除容器后，数据库 domains.db 依然存在
+      - ./data:/app/data
