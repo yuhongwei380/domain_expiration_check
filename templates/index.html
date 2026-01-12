@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>域名监控 Pro</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .container { max-width: 1200px; margin-top: 30px; }
+        
+        /* 状态颜色 */
+        .status-expired { background-color: #ffe6e6 !important; color: #b02a37; }
+        .status-warning { background-color: #fff3cd !important; color: #856404; }
+        .status-timeout { color: #999; font-style: italic; }
+        
+        .action-bar { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .btn-refresh { position: relative; top: -2px; }
+    </style>
+    <script>
+        // 全选/全不选功能
+        function toggle(source) {
+            checkboxes = document.getElementsByName('selected_domains');
+            for(var i=0, n=checkboxes.length;i<n;i++) {
+                checkboxes[i].checked = source.checked;
+            }
+        }
+    </script>
+</head>
+<body>
+
+<div class="container">
+    
+    <!-- 顶部标题栏 -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="fw-bold">🚀 域名监控面板</h2>
+            <p class="text-muted mb-0">数据库缓存模式 · 极速加载</p>
+        </div>
+        <div>
+            <a href="/refresh_all" class="btn btn-success btn-refresh shadow-sm">
+                🔄 更新所有状态
+            </a>
+        </div>
+    </div>
+
+    <!-- 消息提示 -->
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for message in messages %}
+          <div class="alert alert-info alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <!-- 操作区域：手动添加 + 文件导入 -->
+    <div class="action-bar row g-3">
+        <!-- 手动添加 -->
+        <div class="col-md-5">
+            <label class="form-label fw-bold">手动添加域名</label>
+            <form action="/add_single" method="post" class="d-flex gap-2">
+                <input type="text" name="domain" class="form-control" placeholder="例如：yueshu.cn" required>
+                <button type="submit" class="btn btn-primary text-nowrap">添加</button>
+            </form>
+        </div>
+        
+        <!-- 文件导入 -->
+        <div class="col-md-5 offset-md-2">
+            <label class="form-label fw-bold">批量导入 (Excel/CSV)</label>
+            <form action="/upload" method="post" enctype="multipart/form-data" class="d-flex gap-2">
+                <input type="file" name="file" class="form-control" accept=".csv, .xlsx, .xls" required>
+                <button type="submit" class="btn btn-outline-dark text-nowrap">导入</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 表格区域（包裹在Form中用于批量删除） -->
+    <form action="/batch_delete" method="post" onsubmit="return confirm('确定要删除选中的域名吗？');">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <span class="fw-bold">📉 监控列表 ({{ count }})</span>
+                <button type="submit" class="btn btn-sm btn-outline-danger">🗑 批量删除选中</button>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0 align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th width="40" class="text-center">
+                                    <input type="checkbox" onclick="toggle(this)">
+                                </th>
+                                <th>域名</th>
+                                <th>注册商</th>
+                                <th>到期日期</th>
+                                <th>剩余天数</th>
+                                <th>状态</th>
+                                <th>最后更新</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in domains %}
+                            <tr class="
+                                {% if item.status == 'Expired' %}status-expired
+                                {% elif item.status == 'Warning' %}status-warning
+                                {% endif %}">
+                                <td class="text-center">
+                                    <input type="checkbox" name="selected_domains" value="{{ item.domain }}">
+                                </td>
+                                <td class="fw-bold">
+                                    <a href="http://{{ item.domain }}" target="_blank" class="text-decoration-none text-dark">
+                                        {{ item.domain }}
+                                    </a>
+                                </td>
+                                <td>{{ item.registrar }}</td>
+                                <td>{{ item.expiry_date }}</td>
+                                <td>
+                                    {% if item.days_left == 99999 %}
+                                        -
+                                    {% else %}
+                                        {{ item.days_left }} 天
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if item.status == 'Active' %}
+                                        <span class="badge bg-success">正常</span>
+                                    {% elif item.status == 'Warning' %}
+                                        <span class="badge bg-warning text-dark">即将过期</span>
+                                    {% elif item.status == 'Expired' %}
+                                        <span class="badge bg-danger">已过期</span>
+                                    {% elif item.status == 'Timeout' %}
+                                        <span class="badge bg-secondary">超时</span>
+                                    {% elif item.status == 'Pending' %}
+                                        <span class="badge bg-info text-dark">待更新</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ item.status }}</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-muted small">
+                                    {{ item.last_update or '-' }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+
+                            {% if domains|length == 0 %}
+                            <tr>
+                                <td colspan="7" class="text-center py-5 text-muted">
+                                    暂无数据，请添加域名。
+                                </td>
+                            </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
