@@ -31,13 +31,17 @@
 
 <div class="container">
     
-    <!-- 顶部标题栏 -->
+<!-- 顶部标题栏 -->
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="fw-bold">🚀 域名监控面板</h2>
             <p class="text-muted mb-0">数据库缓存模式 · 极速加载</p>
         </div>
-        <div>
+        <div class="d-flex gap-2">
+            <!-- 新增：管理设置按钮 -->
+            <a href="/settings" class="btn btn-outline-primary shadow-sm">
+                ⚙️ 管理配置
+            </a>
             <a href="/refresh_all" class="btn btn-success btn-refresh shadow-sm">
                 🔄 更新所有状态
             </a>
