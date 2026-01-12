@@ -17,24 +17,32 @@ from email.mime.text import MIMEText
 from email.header import Header
 from datetime import datetime, date, timezone, timedelta
 
-# --- 新增 Authentication 相关库 ---
+# --- Flask & Auth 模块 ---
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = 'secret_key_v6_cn_fix_auth' # 建议修改为复杂的随机字符串
 
-# --- Flask-Login 配置 ---
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login' # 未登录自动跳转到 login
-login_manager.login_message = '请先登录管理员账号'
+# 1. 配置密钥：优先从环境变量读取，否则使用默认值（生产环境建议在 docker-compose 中配置 SECRET_KEY）
+app.secret_key = os.environ.get('SECRET_KEY', 'secret_key_v6_cn_fix_auth_docker')
 
-DB_FILE = 'domains.db'
+# 2. 配置数据存储路径：支持 Docker 挂载
+DATA_DIR = os.environ.get('DATA_DIR', '.')
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+DB_FILE = os.path.join(DATA_DIR, 'domains.db')
+
+# 定义 UTC+8 时区
 TZ_CN = timezone(timedelta(hours=8))
 
-# --- 用户类 (Flask-Login 需要) ---
+# --- Flask-Login 初始化 ---
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = '请先登录管理员账号'
+
+# --- 用户模型 ---
 class User(UserMixin):
     def __init__(self, id, username, password_hash):
         self.id = id
@@ -74,22 +82,30 @@ def init_db():
                     )''')
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", ('alert_days', '30'))
         
-        # 3. 用户表 (新增)
+        # 3. 用户表
         c.execute('''CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT UNIQUE,
                         password_hash TEXT
                     )''')
         
-        # 检查是否存在管理员，不存在则创建默认管理员
-        c.execute("SELECT count(*) FROM users")
-        if c.fetchone()[0] == 0:
-            print("Creating default admin account...")
-            # 默认账号: admin / admin888
-            p_hash = generate_password_hash('admin888')
-            c.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", ('admin', p_hash))
-            print("默认管理员已创建: 账号 admin / 密码 admin888")
+        # 4. 初始化/更新管理员账号
+        # 从环境变量获取密码，默认 admin888
+        env_password = os.environ.get('ADMIN_PASSWORD', 'admin888')
+        p_hash = generate_password_hash(env_password)
         
+        c.execute("SELECT id FROM users WHERE username = 'admin'")
+        row = c.fetchone()
+        
+        if row:
+            # 如果管理员已存在，强制更新密码（确保 Docker 环境变量修改后生效）
+            c.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (p_hash,))
+            print(f"系统启动: 管理员(admin) 密码已根据环境变量更新。")
+        else:
+            # 如果不存在，创建默认管理员
+            c.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", ('admin', p_hash))
+            print(f"系统启动: 管理员(admin) 已创建，初始密码: {env_password}")
+            
         conn.commit()
 
 def get_setting(key, default=None):
@@ -131,7 +147,8 @@ def delete_domains_db(domain_list):
             c.execute("DELETE FROM domains WHERE domain=?", (d,))
         conn.commit()
 
-# --- 核心查询逻辑 (保持不变) ---
+# --- 核心查询逻辑 ---
+
 def calculate_days_left(exp_date):
     if not exp_date: return None
     now = datetime.now(TZ_CN)
@@ -145,8 +162,8 @@ def calculate_days_left(exp_date):
     return delta.days
 
 def query_cn_socket(domain):
-    # ... (与之前相同，略去重复代码，请保留原有的 query_cn_socket 完整内容) ...
-    # 保持原有 Socket 代码
+    """ Socket 深度查询 .cn 域名 """
+    print(f"尝试使用 Socket 深度查询: {domain}")
     whois_server = "whois.cnnic.cn"
     port = 43
     response = b""
@@ -167,15 +184,16 @@ def query_cn_socket(domain):
         if reg_match:
             result['registrar'] = reg_match.group(1).strip()
         return result
-    except Exception:
+    except Exception as e:
+        print(f"Socket 查询失败 {domain}: {e}")
         return None
 
 def query_whois_online(domain):
-    # ... (与之前相同，请保留原有的 query_whois_online 完整内容) ...
     domain = domain.strip().lower()
     info = {'domain': domain, 'registrar': '-', 'expiry_date': '-', 'days_left': 99999, 'status': 'Pending'}
     found_date = None
     found_registrar = None
+
     try:
         w = whois.whois(domain)
         exp_date = w.expiration_date
@@ -185,7 +203,8 @@ def query_whois_online(domain):
         if exp_date:
             found_date = exp_date
             found_registrar = registrar
-    except: pass
+    except Exception as e:
+        print(f"标准库查询失败 {domain}: {e}")
 
     if not found_date and domain.endswith('.cn'):
         fallback_data = query_cn_socket(domain)
@@ -198,8 +217,10 @@ def query_whois_online(domain):
         info['registrar'] = str(found_registrar) if found_registrar else 'Unknown'
         days = calculate_days_left(found_date)
         info['days_left'] = days
+        
         try: alert_days = int(get_setting('alert_days', 30))
         except: alert_days = 30
+            
         if days is not None:
             if days < 0: info['status'] = 'Expired'
             elif days < alert_days: info['status'] = 'Warning'
@@ -222,14 +243,95 @@ def refresh_domains_task(domain_list):
             except: pass
     return results
 
+# --- 告警发送逻辑 (含加签) ---
+
 def send_alert_messages(expiring_domains):
-    # ... (保持原有的告警逻辑，包含加签代码) ...
-    # 为节省篇幅，此处省略，请务必保留上面的完整 send_alert_messages 函数
-    pass # 实际代码请粘贴上面的完整版
+    if not expiring_domains: return
 
-# --- 路由 ---
+    msg_title = f"⚠️ 域名过期预警 ({len(expiring_domains)}个)"
+    msg_body = "以下域名即将过期或已过期，请及时处理：\n\n"
+    for item in expiring_domains:
+        msg_body += f"- {item['domain']}: 剩余 {item['days']} 天 ({item['date']})\n"
+    
+    full_text = f"{msg_title}\n{msg_body}"
+    print("触发告警:\n" + full_text)
 
-# 1. 登录页面
+    ding_token = get_setting('ding_webhook')
+    ding_secret = get_setting('ding_secret')
+    feishu_token = get_setting('feishu_webhook')
+    feishu_secret = get_setting('feishu_secret')
+    smtp_host = get_setting('smtp_host')
+    
+    # 钉钉
+    if ding_token:
+        try:
+            target_url = ding_token
+            if ding_secret:
+                timestamp = str(round(time.time() * 1000))
+                secret_enc = ding_secret.encode('utf-8')
+                string_to_sign = '{}\n{}'.format(timestamp, ding_secret)
+                string_to_sign_enc = string_to_sign.encode('utf-8')
+                hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+                sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+                separator = '&' if '?' in ding_token else '?'
+                target_url = f"{ding_token}{separator}timestamp={timestamp}&sign={sign}"
+            
+            headers = {'Content-Type': 'application/json'}
+            data = {"msgtype": "text", "text": {"content": full_text}}
+            requests.post(target_url, headers=headers, data=json.dumps(data), timeout=5)
+            print("钉钉发送成功")
+        except Exception as e: print(f"钉钉发送失败: {e}")
+
+    # 飞书
+    if feishu_token:
+        try:
+            headers = {'Content-Type': 'application/json'}
+            data = {"msg_type": "text", "content": {"text": full_text}}
+            if feishu_secret:
+                timestamp = str(int(time.time()))
+                string_to_sign = '{}\n{}'.format(timestamp, feishu_secret)
+                hmac_code = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+                sign = base64.b64encode(hmac_code).decode('utf-8')
+                data['timestamp'] = timestamp
+                data['sign'] = sign
+            requests.post(feishu_token, headers=headers, data=json.dumps(data), timeout=5)
+            print("飞书发送成功")
+        except Exception as e: print(f"飞书发送失败: {e}")
+
+    # 邮件
+    if smtp_host:
+        try:
+            smtp_port = int(get_setting('smtp_port', 465))
+            smtp_user = get_setting('smtp_user')
+            smtp_pass = get_setting('smtp_pass')
+            smtp_to = get_setting('smtp_to')
+            
+            if smtp_user and smtp_pass and smtp_to:
+                message = MIMEText(msg_body, 'plain', 'utf-8')
+                message['From'] = Header(f"DomainMonitor <{smtp_user}>", 'utf-8')
+                message['To'] =  Header(smtp_to, 'utf-8')
+                message['Subject'] = Header(msg_title, 'utf-8')
+                if smtp_port == 465:
+                    server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+                else:
+                    server = smtplib.SMTP(smtp_host, smtp_port)
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, smtp_to, message.as_string())
+                server.quit()
+                print("邮件发送成功")
+        except Exception as e: print(f"邮件发送失败: {e}")
+
+# --- 路由配置 ---
+
+# 1. 游客主页 (只读)
+@app.route('/')
+def index():
+    domains = get_all_domains()
+    try: alert_days = int(get_setting('alert_days', 30))
+    except: alert_days = 30
+    return render_template('guest.html', domains=domains, count=len(domains), alert_days=alert_days)
+
+# 2. 登录页
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
@@ -238,28 +340,20 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
-        
         with sqlite3.connect(DB_FILE) as conn:
             c = conn.cursor()
             c.execute("SELECT * FROM users WHERE username = ?", (username,))
             row = c.fetchone()
-            
-            if row:
-                # row[2] 是 password_hash
-                if check_password_hash(row[2], password):
-                    user = User(id=row[0], username=row[1], password_hash=row[2])
-                    login_user(user)
-                    flash('登录成功')
-                    # 检查是否有 next 跳转参数
-                    next_page = request.args.get('next')
-                    return redirect(next_page or url_for('admin_dashboard'))
-                else:
-                    flash('密码错误')
+            if row and check_password_hash(row[2], password):
+                user = User(id=row[0], username=row[1], password_hash=row[2])
+                login_user(user)
+                flash('登录成功')
+                return redirect(request.args.get('next') or url_for('admin_dashboard'))
             else:
-                flash('用户不存在')
-                
+                flash('账号或密码错误')
     return render_template('login.html')
 
+# 3. 退出登录
 @app.route('/logout')
 @login_required
 def logout():
@@ -267,29 +361,16 @@ def logout():
     flash('已退出登录')
     return redirect(url_for('index'))
 
-# 2. 游客只读主页 (原来的 /)
-@app.route('/')
-def index():
-    domains = get_all_domains()
-    # 游客也能看颜色状态，所以需要读取阈值
-    try:
-        alert_days = int(get_setting('alert_days', 30))
-    except:
-        alert_days = 30
-    return render_template('guest.html', domains=domains, count=len(domains), alert_days=alert_days)
-
-# 3. 管理员主页 (原来的 index.html 功能)
+# 4. 管理员后台
 @app.route('/admin')
-@login_required # 必须登录
+@login_required
 def admin_dashboard():
     domains = get_all_domains()
-    try:
-        alert_days = int(get_setting('alert_days', 30))
-    except:
-        alert_days = 30
+    try: alert_days = int(get_setting('alert_days', 30))
+    except: alert_days = 30
     return render_template('admin.html', domains=domains, count=len(domains), alert_days=alert_days)
 
-# 4. 设置页面 (仅限管理员)
+# 5. 设置页面
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
@@ -321,27 +402,24 @@ def settings():
     }
     return render_template('settings.html', config=config)
 
-# --- 以下操作接口都需要登录 ---
+# 6. 后台操作接口 (需登录)
 
 @app.route('/refresh_all')
 @login_required
 def refresh_all():
-    # ... (保持原逻辑不变) ...
     current_domains = [row['domain'] for row in get_all_domains()]
     if not current_domains:
         flash('列表中没有域名')
-        return redirect(url_for('admin_dashboard')) # 跳转回管理页
+        return redirect(url_for('admin_dashboard'))
     
     flash(f'正在后台更新 {len(current_domains)} 个域名...')
     updated_data = refresh_domains_task(current_domains)
     
     try: threshold = int(get_setting('alert_days', 30))
     except: threshold = 30
-    expiring_list = [
-        {'domain': d['domain'], 'days': d['days_left'], 'date': d['expiry_date']}
-        for d in updated_data 
-        if d.get('days_left') is not None and d.get('days_left') < threshold
-    ]
+    
+    expiring_list = [d for d in updated_data 
+                     if d.get('days_left') is not None and isinstance(d.get('days_left'), int) and d.get('days_left') < threshold]
     
     if expiring_list:
         send_alert_messages(expiring_list)
@@ -354,7 +432,6 @@ def refresh_all():
 @app.route('/add_single', methods=['POST'])
 @login_required
 def add_single():
-    # ... (保持原逻辑不变) ...
     domain = request.form.get('domain')
     if domain:
         domain = domain.strip().lower()
@@ -370,7 +447,6 @@ def add_single():
 @app.route('/batch_delete', methods=['POST'])
 @login_required
 def batch_delete():
-    # ... (保持原逻辑不变) ...
     selected = request.form.getlist('selected_domains')
     if selected:
         delete_domains_db(selected)
@@ -382,7 +458,6 @@ def batch_delete():
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
-    # ... (保持原逻辑不变) ...
     if 'file' not in request.files: return redirect(request.url)
     file = request.files['file']
     if not file or file.filename == '': return redirect(request.url)
@@ -404,7 +479,8 @@ def upload_file():
                 try:
                     with sqlite3.connect(DB_FILE) as conn:
                         c = conn.cursor()
-                        c.execute("INSERT OR IGNORE INTO domains (domain, registrar, days_left, status) VALUES (?, ?, ?, ?)", (d, 'Pending', 99999, 'Pending'))
+                        c.execute("INSERT OR IGNORE INTO domains (domain, registrar, days_left, status) VALUES (?, ?, ?, ?)", 
+                                  (d, 'Pending', 99999, 'Pending'))
                 except: pass
             flash(f'已导入 {len(new_domains)} 个域名')
     except Exception as e:
@@ -415,7 +491,9 @@ def upload_file():
 def favicon(): return '', 204
 
 if __name__ == '__main__':
+    # 初始化数据库 (自动创建表和管理员)
     init_db()
-    print("服务运行中: http://0.0.0.0:5000")
-    print("默认管理员账号: admin / 密码: admin888")
+    print(f"服务启动中...")
+    print(f"数据路径: {DB_FILE}")
+    print(f"管理员账号: admin (密码见环境变量 ADMIN_PASSWORD，默认 admin888)")
     app.run(host='0.0.0.0', port=5000, debug=True)
