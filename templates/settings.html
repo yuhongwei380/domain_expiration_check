@@ -55,16 +55,36 @@
             <div class="card-body">
                 <h5 class="section-title">IM 机器人通知</h5>
                 
-                <div class="mb-3">
-                    <label class="form-label fw-bold">钉钉 Webhook URL</label>
-                    <input type="text" name="ding_webhook" class="form-control" value="{{ config.ding_webhook }}" placeholder="https://oapi.dingtalk.com/robot/send?access_token=...">
-                    <div class="form-text">在钉钉群设置中添加“自定义机器人”，安全设置选择“自定义关键词”，填写“域名”。</div>
+                <!-- 钉钉 -->
+                <div class="mb-3 border-bottom pb-3">
+                    <label class="form-label fw-bold">钉钉 (DingTalk)</label>
+                    <div class="row g-2">
+                        <div class="col-md-8">
+                            <input type="text" name="ding_webhook" class="form-control" value="{{ config.ding_webhook }}" placeholder="Webhook URL: https://oapi.dingtalk.com/robot/send?access_token=...">
+                        </div>
+                        <div class="col-md-4">
+                            <input type="text" name="ding_secret" class="form-control" value="{{ config.ding_secret }}" placeholder="加签密钥 (SEC...开头) [选填]">
+                        </div>
+                    </div>
+                    <div class="form-text text-muted small">
+                        若未填写密钥，请确保机器人安全设置中勾选了“自定义关键词”并包含“域名”。若填写密钥，则使用加签校验。
+                    </div>
                 </div>
 
+                <!-- 飞书 -->
                 <div class="mb-3">
-                    <label class="form-label fw-bold">飞书 Webhook URL</label>
-                    <input type="text" name="feishu_webhook" class="form-control" value="{{ config.feishu_webhook }}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
-                    <div class="form-text">在飞书群设置中添加机器人，无需特殊密钥。</div>
+                    <label class="form-label fw-bold">飞书 (Feishu)</label>
+                    <div class="row g-2">
+                        <div class="col-md-8">
+                            <input type="text" name="feishu_webhook" class="form-control" value="{{ config.feishu_webhook }}" placeholder="Webhook URL: https://open.feishu.cn/open-apis/bot/v2/hook/...">
+                        </div>
+                        <div class="col-md-4">
+                            <input type="text" name="feishu_secret" class="form-control" value="{{ config.feishu_secret }}" placeholder="签名校验密钥 [选填]">
+                        </div>
+                    </div>
+                    <div class="form-text text-muted small">
+                        对应飞书机器人设置中的“签名校验”。若不填则默认仅发送消息。
+                    </div>
                 </div>
             </div>
         </div>
