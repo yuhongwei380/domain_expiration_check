@@ -1,0 +1,7 @@
+Flask
+flask-login
+python-whois
+pandas
+openpyxl
+requests
+gunicorn
