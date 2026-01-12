@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>域名监控 (只读)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .container { max-width: 1200px; margin-top: 30px; }
+        .status-expired { background-color: #ffe6e6 !important; color: #b02a37; }
+        .status-warning { background-color: #fff3cd !important; color: #856404; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    
+    <!-- 顶部 -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="fw-bold">🚀 域名监控面板</h2>
+            <p class="text-muted mb-0">当前为游客模式 (只读)</p>
+        </div>
+        <div>
+            <a href="/login" class="btn btn-outline-primary">
+                🔒 管理员登录
+            </a>
+        </div>
+    </div>
+
+    <!-- 列表 -->
+    <div class="card shadow-sm">
+        <div class="card-header bg-white py-3">
+            <span class="fw-bold">📉 监控列表 ({{ count }})</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <!-- 去掉了复选框列 -->
+                            <th>域名</th>
+                            <th>注册商</th>
+                            <th>到期日期</th>
+                            <th>剩余天数</th>
+                            <th>状态</th>
+                            <th>最后更新</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in domains %}
+                        <tr class="
+                            {% if item.status == 'Expired' %}status-expired
+                            {% elif item.status == 'Warning' %}status-warning
+                            {% endif %}">
+                            <td class="fw-bold">
+                                <a href="http://{{ item.domain }}" target="_blank" class="text-decoration-none text-dark">
+                                    {{ item.domain }}
+                                </a>
+                            </td>
+                            <td>{{ item.registrar }}</td>
+                            <td>{{ item.expiry_date }}</td>
+                            <td>
+                                {% if item.days_left == 99999 %} - {% else %} {{ item.days_left }} 天 {% endif %}
+                            </td>
+                            <td>
+                                {% if item.status == 'Active' %}
+                                    <span class="badge bg-success">正常</span>
+                                {% elif item.status == 'Warning' %}
+                                    <span class="badge bg-warning text-dark">即将过期</span>
+                                {% elif item.status == 'Expired' %}
+                                    <span class="badge bg-danger">已过期</span>
+                                {% elif item.status == 'Timeout' %}
+                                    <span class="badge bg-secondary">超时</span>
+                                {% elif item.status == 'Pending' %}
+                                    <span class="badge bg-info text-dark">待更新</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ item.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-muted small">
+                                {{ item.last_update or '-' }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>
